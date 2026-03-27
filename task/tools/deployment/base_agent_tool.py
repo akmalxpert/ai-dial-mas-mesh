@@ -23,10 +23,7 @@ class BaseAgentTool(BaseTool, ABC):
         pass
 
     async def _execute(self, tool_call_params: ToolCallParams) -> str | Message:
-        # 1. Parse parameters
-        arguments = json.loads(tool_call_params.tool_call.function.arguments)
-
-        # 2. Create AsyncDial client and call the agent with streaming
+        # 1. Create AsyncDial client and call the agent with streaming
         client = AsyncDial(
             base_url=self.endpoint,
             api_key=tool_call_params.api_key,
@@ -143,19 +140,8 @@ class BaseAgentTool(BaseTool, ABC):
                         # Add the user message that is going before this assistant message
                         if i > 0 and all_messages[i - 1].role == Role.USER:
                             user_msg = all_messages[i - 1]
-                            user_content = user_msg.content or ''
-                            if user_msg.custom_content and user_msg.custom_content.attachments:
-                                attachments_urls = '\n\nAttached files URLs:\n'
-                                for att in user_msg.custom_content.attachments:
-                                    if att.url:
-                                        attachments_urls += f"{att.url}\n"
-                                    elif att.reference_url:
-                                        attachments_urls += f"{att.reference_url}\n"
-                                user_content += attachments_urls
-                            messages.append({
-                                "role": Role.USER.value,
-                                "content": user_content
-                            })
+                            user_msg_dict = self._build_user_message_dict(user_msg)
+                            messages.append(user_msg_dict)
 
                         # Add assistant message with refactored state
                         assistant_msg_copy = deepcopy(message)
@@ -163,7 +149,7 @@ class BaseAgentTool(BaseTool, ABC):
                         assistant_msg_copy.custom_content.state = agent_state
                         messages.append(assistant_msg_copy.model_dump(exclude_none=True))
 
-        # 4. Add user message with prompt
+        # 4. Add user message with prompt and propagate custom_content (attachments)
         user_message: dict[str, Any] = {
             "role": Role.USER.value,
             "content": prompt
@@ -175,14 +161,41 @@ class BaseAgentTool(BaseTool, ABC):
                 if isinstance(msg,
                               Message) and msg.role == Role.USER and msg.custom_content and msg.custom_content.attachments:
                     attachments_urls = '\n\nAttached files URLs:\n'
+                    attachments_list = []
                     for att in msg.custom_content.attachments:
                         if att.url:
                             attachments_urls += f"{att.url}\n"
                         elif att.reference_url:
                             attachments_urls += f"{att.reference_url}\n"
+                        attachments_list.append(
+                            att.model_dump(exclude_none=True) if hasattr(att, 'model_dump') else att.dict(
+                                exclude_none=True))
                     user_message["content"] = prompt + attachments_urls
+                    user_message["custom_content"] = {"attachments": attachments_list}
                     break
 
         messages.append(user_message)
 
         return messages
+
+    @staticmethod
+    def _build_user_message_dict(user_msg: Message) -> dict[str, Any]:
+        """Build a user message dict including custom_content for file access authorization."""
+        user_content = user_msg.content or ''
+        result: dict[str, Any] = {
+            "role": Role.USER.value,
+            "content": user_content
+        }
+        if user_msg.custom_content and user_msg.custom_content.attachments:
+            attachments_urls = '\n\nAttached files URLs:\n'
+            attachments_list = []
+            for att in user_msg.custom_content.attachments:
+                if att.url:
+                    attachments_urls += f"{att.url}\n"
+                elif att.reference_url:
+                    attachments_urls += f"{att.reference_url}\n"
+                attachments_list.append(
+                    att.model_dump(exclude_none=True) if hasattr(att, 'model_dump') else att.dict(exclude_none=True))
+            result["content"] = user_content + attachments_urls
+            result["custom_content"] = {"attachments": attachments_list}
+        return result
